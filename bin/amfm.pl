@@ -139,7 +139,7 @@ sub scrobble {
                            sk => $STATE{session_key},
                            artist => $STATE{artist}, track => $STATE{track});
         say $req;
-        make_request($URL_ROOT, 1, $req)->{session}->{key}; 
+        make_request($URL_ROOT, 1, $req); 
     }
     $STATE{scrobbled} = 1;
 }
@@ -150,7 +150,7 @@ sub update_now_playing {
                            sk => $STATE{session_key},
                            artist => $STATE{artist}, track => $STATE{track});
         warn "[INFO]\tUpdating now playing $STATE{artist} - $STATE{track}";
-        make_request($URL_ROOT, 1, $req)->{session}->{key};
+        make_request($URL_ROOT, 1, $req);
     }
 }
 
