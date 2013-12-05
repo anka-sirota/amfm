@@ -9,15 +9,10 @@ use URI::Escape;
 use WWW::Curl::Easy qw/CURLOPT_HEADER CURLOPT_URL CURLOPT_TIMEOUT CURLOPT_HTTPHEADER CURLOPT_WRITEDATA CURLOPT_POSTFIELDS CURLOPT_POST/;
 $| = 1;
 
-my %SETTINGS = (
-    username => $ENV{LASTFM_USERNAME},
-    password => $ENV{LASTFM_PASSWORD},
-    mpd_host => $ENV{MPD_HOST} || "localhost",
-    mpd_port => $ENV{MPD_PORT} || "6600",
-    autosubmit => 0,
-    date_format => "%a %b %e %H:%M:%S %Y",
-);
-
+my $MPD_HOST = $ENV{MPD_HOST} || "localhost";
+my $MPD_PORT = $ENV{MPD_PORT} || "6600";
+my $PASSWORD = $ENV{LASTFM_PASSWORD} || die "Please provide LASTFM_PASSWORD variable";
+my $USERNAME = $ENV{LASTFM_USERNAME} || die "Please provide LASTFM_USERNAME variable";
 my $TICK = 5;
 my $MIN_PLAY_TIME = 30;
 my $API_KEY = "7c04baa41513c100f7544a329ac97638";
@@ -48,8 +43,8 @@ sub compose_signed_url {
 
 sub mpd_connect {
     my $socket = IO::Socket::INET->new(
-        PeerHost => $SETTINGS{mpd_host}, 
-        PeerPort => $SETTINGS{mpd_port},
+        PeerHost => $MPD_HOST, 
+        PeerPort => $MPD_PORT,
         Proto => 'tcp',
     ) or die "Could not create socket: $!\n";
 
@@ -99,8 +94,8 @@ sub handshake {
     if (!$STATE{token}) {
         die 'Cannot get token';
     }
-    my $req = compose_signed_url(username => $SETTINGS{username},
-                       password => $SETTINGS{password},
+    my $req = compose_signed_url(username => $USERNAME,
+                       password => $PASSWORD,
                        method => "auth.getMobileSession",
                        token => $STATE{token});
 
