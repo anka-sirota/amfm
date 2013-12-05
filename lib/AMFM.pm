@@ -255,7 +255,7 @@ sub daemonize {
     open(STDIN, "</dev/null");
     open(STDOUT, ">$LOG_FILE");
     open(STDERR, ">$ERR_FILE");
-    main;
+    $self->main;
 }
 
 1;
