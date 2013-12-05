@@ -1,12 +1,12 @@
 use 5.014;
 use warnings;
-use IO::Socket::INET;
 use Data::Dumper;
-use URI::Escape;
-use POSIX qw/strftime/;
-use WWW::Curl::Easy qw/CURLOPT_HEADER CURLOPT_URL CURLOPT_TIMEOUT CURLOPT_HTTPHEADER CURLOPT_WRITEDATA CURLOPT_POSTFIELDS CURLOPT_POST/;
-use JSON qw/from_json/;
 use Digest::MD5 qw/md5_hex/;
+use IO::Socket::INET;
+use JSON qw/from_json/;
+use POSIX qw/strftime/;
+use URI::Escape;
+use WWW::Curl::Easy qw/CURLOPT_HEADER CURLOPT_URL CURLOPT_TIMEOUT CURLOPT_HTTPHEADER CURLOPT_WRITEDATA CURLOPT_POSTFIELDS CURLOPT_POST/;
 $| = 1;
 
 my %SETTINGS = (
@@ -37,7 +37,7 @@ my %STATE = (
 
 my $curl = WWW::Curl::Easy->new();
 
-sub sign_url {
+sub compose_signed_url {
     my %params = @_;
     $params{api_key} = $API_KEY;
     $params{format} = 'json';
@@ -93,22 +93,24 @@ sub make_request {
 }
 
 sub handshake {
-    my $token_url = sign_url(method => 'auth.getToken');
-    my $auth_token = make_request($URL_ROOT.'?'.$token_url)->{token};
-    if (!$auth_token) {
+    my $token_url = compose_signed_url(method => 'auth.getToken');
+    warn "[INFO]\tRequesting an auth token from Last.fm";
+    $STATE{token} = make_request($URL_ROOT.'?'.$token_url)->{token};
+    if (!$STATE{token}) {
         die 'Cannot get token';
     }
-    $STATE{token} = $auth_token;
-    my $req = sign_url(username => $SETTINGS{username},
+    my $req = compose_signed_url(username => $SETTINGS{username},
                        password => $SETTINGS{password},
                        method => "auth.getMobileSession",
-                       token => $auth_token);
+                       token => $STATE{token});
 
-    warn "[INFO]\tConnecting to Last.fm...";
+    warn "[INFO]\tRequesting a session key from Last.fm";
 
-    my $session_key = make_request($URL_ROOT, 1, $req)->{session}->{key};
-    $STATE{session_key} = $session_key;
-    return $session_key;
+    $STATE{session_key} = make_request($URL_ROOT, 1, $req)->{session}->{key};
+    if (!$STATE{session_key}) {
+        @STATE{('session_key', 'token')} = ();
+    }
+    return $STATE{session_key};
 }
 
 sub mpd_is_playing {
@@ -116,14 +118,28 @@ sub mpd_is_playing {
     return ($status{state} =~ /play/) ? 1 : 0;
 }
 
-sub update_current_song {
+sub get_track {
     my $song = mpd_command('currentsong');
+    my ($artist, $track) = ();
     if ($song =~ /Title:\s+(.+)$/m) {
-        warn "[INFO]\t Playing $1";
-        my $old_song = $STATE{title};
-        $STATE{title} = $1;
-        ($STATE{artist}, $STATE{track}) = split(/\s+-\s+/, $1);
-        if (!defined($old_song) or !($1 eq $old_song)) {
+        $song = $1;
+        # trying to remove track numbers
+        $song =~ s/[.\[\]\(\)0-9_]{2,}//g;
+        ($artist, $track) = split(/\s+-\s+/, $song);
+        if (!($artist and $track)) {
+            ($artist, $track) = split(/-/, $song);
+        }
+    }
+    return ($artist, $track);
+}
+
+sub update_current_song {
+    my ($artist, $track) = get_track();
+    if ($artist and $track) {
+        warn "[INFO]\t Playing $track by $artist";
+        if (!defined($STATE{track}) or !($STATE{track} eq $track)
+         or !defined($STATE{artist}) or !($STATE{artist} eq $artist)) {
+            ($STATE{artist}, $STATE{track}) = ($artist, $track);
             $STATE{updated} = time;
             $STATE{scrobbled} = 0;
             update_now_playing();
@@ -134,7 +150,7 @@ sub update_current_song {
 sub scrobble {
     if ($STATE{artist} and $STATE{track}) {
         warn "[INFO]\tScrobbling track $STATE{artist} - $STATE{track}";
-        my $req = sign_url(method => 'track.scrobble',
+        my $req = compose_signed_url(method => 'track.scrobble',
                            timestamp => time,
                            sk => $STATE{session_key},
                            artist => $STATE{artist}, track => $STATE{track});
@@ -146,10 +162,10 @@ sub scrobble {
 
 sub update_now_playing {
     if ($STATE{artist} and $STATE{track}) {
-        my $req = sign_url(method => 'track.updateNowPlaying',
+        warn "[INFO]\tUpdating now playing $STATE{artist} - $STATE{track}";
+        my $req = compose_signed_url(method => 'track.updateNowPlaying',
                            sk => $STATE{session_key},
                            artist => $STATE{artist}, track => $STATE{track});
-        warn "[INFO]\tUpdating now playing $STATE{artist} - $STATE{track}";
         make_request($URL_ROOT, 1, $req);
     }
 }
@@ -159,15 +175,14 @@ sub run {
     mpd_connect unless $STATE{mpd_socket};
     return unless mpd_is_playing();
 
-    my $old_title = $STATE{title};
     my $last_updated = $STATE{updated};
     my ($artist, $track) = update_current_song;
 
-    if ($last_updated and $STATE{title}) {
+    if ($last_updated) {
         say time - $STATE{updated};
     }
-    return if !$last_updated or !$STATE{title} or $STATE{scrobbled}
-              or ((time - $STATE{updated}) < $MIN_PLAY_TIME);
+    return if !$last_updated or !$STATE{artist} or $STATE{scrobbled}
+              or !$STATE{track} or ((time - $STATE{updated}) < $MIN_PLAY_TIME);
 
     scrobble;
 }
