@@ -1,10 +1,12 @@
+#!/usr/bin/perl
+
 use 5.014;
 use warnings;
 use Data::Dumper;
 use Digest::MD5 qw/md5_hex/;
 use IO::Socket::INET;
 use JSON qw/from_json/;
-use POSIX qw/strftime/;
+use POSIX qw/strftime setsid/;
 use URI::Escape;
 use WWW::Curl::Easy qw/CURLOPT_HEADER CURLOPT_URL CURLOPT_TIMEOUT CURLOPT_HTTPHEADER CURLOPT_WRITEDATA CURLOPT_POSTFIELDS CURLOPT_POST/;
 $| = 1;
@@ -13,6 +15,9 @@ my $MPD_HOST = $ENV{MPD_HOST} || "localhost";
 my $MPD_PORT = $ENV{MPD_PORT} || "6600";
 my $PASSWORD = $ENV{LASTFM_PASSWORD} || die "Please provide LASTFM_PASSWORD variable";
 my $USERNAME = $ENV{LASTFM_USERNAME} || die "Please provide LASTFM_USERNAME variable";
+my $PID_FILE = $ENV{PID_FILE} || './amfm.pid';
+my $LOG_FILE = $ENV{LOG_FILE} || './amfm.log';
+my $ERR_FILE = $ENV{ERR_FILE} || './amfm.err';
 my $TICK = 5;
 my $MIN_PLAY_TIME = 30;
 my $API_KEY = "7c04baa41513c100f7544a329ac97638";
@@ -84,7 +89,15 @@ sub make_request {
         warn $curl->strerror($retcode);
         return '';
     }
-    return (defined($response)) ? from_json($response) : {token => undef};
+    my $json = {};
+    if ($response) {
+        $json = from_json($response);
+        #say Dumper \ $json;
+        if ($json->{error}) {
+            warn "[ERROR]\t$json->{message}";
+        }
+    }
+    return $json;
 }
 
 sub handshake {
@@ -119,11 +132,14 @@ sub get_track {
     if ($song =~ /Title:\s+(.+)$/m) {
         $song = $1;
         # trying to remove track numbers
-        $song =~ s/[.\[\]\(\)0-9_]{2,}//g;
+        $song =~ s/[-_.\[\]\(\)0-9]{2,}//g;
         ($artist, $track) = split(/\s+-\s+/, $song);
         if (!($artist and $track)) {
             ($artist, $track) = split(/-/, $song);
         }
+        # filter out possible garbage
+        my $title = '[a-zA-Z0-9_\t\n\f\r\cK]{3,}';
+        return () unless $artist and $track and $artist =~ /$title/ and $track =~ /$title/;
     }
     return ($artist, $track);
 }
@@ -131,7 +147,7 @@ sub get_track {
 sub update_current_song {
     my ($artist, $track) = get_track();
     if ($artist and $track) {
-        warn "[INFO]\t Playing $track by $artist";
+        warn "[INFO]\tPlaying $track by $artist";
         if (!defined($STATE{track}) or !($STATE{track} eq $track)
          or !defined($STATE{artist}) or !($STATE{artist} eq $artist)) {
             ($STATE{artist}, $STATE{track}) = ($artist, $track);
@@ -144,12 +160,12 @@ sub update_current_song {
 
 sub scrobble {
     if ($STATE{artist} and $STATE{track}) {
-        warn "[INFO]\tScrobbling track $STATE{artist} - $STATE{track}";
+        warn "[INFO]\tScrobbling track $STATE{track} by $STATE{artist}";
         my $req = compose_signed_url(method => 'track.scrobble',
                            timestamp => time,
                            sk => $STATE{session_key},
                            artist => $STATE{artist}, track => $STATE{track});
-        say $req;
+        warn "[DEBUG]\t$req";
         make_request($URL_ROOT, 1, $req); 
     }
     $STATE{scrobbled} = 1;
@@ -157,7 +173,7 @@ sub scrobble {
 
 sub update_now_playing {
     if ($STATE{artist} and $STATE{track}) {
-        warn "[INFO]\tUpdating now playing $STATE{artist} - $STATE{track}";
+        warn "[INFO]\tUpdating now playing $STATE{track} by $STATE{artist}";
         my $req = compose_signed_url(method => 'track.updateNowPlaying',
                            sk => $STATE{session_key},
                            artist => $STATE{artist}, track => $STATE{track});
@@ -182,7 +198,7 @@ sub run {
     scrobble;
 }
 
-$SIG{'INT'} = sub {
+$SIG{TERM} = $SIG{INT} = sub {
         warn "Closing connection to MPD";
         $STATE{running} = 0;
         $STATE{mpd_socket}->close() if $STATE{mpd_socket};
