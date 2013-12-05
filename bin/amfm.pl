@@ -144,9 +144,12 @@ sub get_track {
         $song = $1;
         # trying to remove track numbers
         $song =~ s/[-_.\[\]\(\)0-9]{2,}//g;
-        ($artist, $track) = split(/\s+-\s+/, $song);
-        if (!($artist and $track)) {
-            ($artist, $track) = split(/-/, $song);
+        $song =~ s/^(?:-|\s)+//g;
+        $song =~ s/(?:-|\s)+$//g;
+        ($artist, $track) = split(/(?:-|\s-|-\s)+/, $song);
+        if ($artist and $track) {
+            $artist =~ s/_/ /g;
+            $track =~ s/_/ /g;
         }
         # filter out possible garbage
         my $title = '[a-zA-Z0-9_\t\n\f\r\cK]{3,}';
@@ -238,5 +241,6 @@ sub daemonize {
     open(STDERR, ">$ERR_FILE");
     main;
 }
+
 main;
 #daemonize;
