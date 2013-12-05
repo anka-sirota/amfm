@@ -2,9 +2,11 @@
 
 use 5.014;
 use warnings;
+use lib './../lib/';
 use Data::Dumper;
 use Digest::MD5 qw/md5_hex/;
 use IO::Socket::INET;
+use Logger qw/error debug warning info/;
 use JSON qw/from_json/;
 use POSIX qw/strftime setsid/;
 use URI::Escape;
@@ -15,9 +17,9 @@ my $MPD_HOST = $ENV{MPD_HOST} || "localhost";
 my $MPD_PORT = $ENV{MPD_PORT} || "6600";
 my $PASSWORD = $ENV{LASTFM_PASSWORD} || die "Please provide LASTFM_PASSWORD variable";
 my $USERNAME = $ENV{LASTFM_USERNAME} || die "Please provide LASTFM_USERNAME variable";
-my $PID_FILE = $ENV{PID_FILE} || './amfm.pid';
-my $LOG_FILE = $ENV{LOG_FILE} || './amfm.log';
-my $ERR_FILE = $ENV{ERR_FILE} || './amfm.err';
+my $PID_FILE = $ENV{PID_FILE} || '/tmp/amfm.pid';
+my $LOG_FILE = $ENV{LOG_FILE} || '/tmp/amfm.log';
+my $ERR_FILE = $ENV{ERR_FILE} || '/tmp/amfm.err';
 my $TICK = 5;
 my $MIN_PLAY_TIME = 30;
 my $API_KEY = "7c04baa41513c100f7544a329ac97638";
@@ -33,9 +35,17 @@ my %STATE = (
     updated => undef,
     scrobbled => 0,
     running => 1,
+    colorize => 1,
 );
 
+$SIG{TERM} = $SIG{INT} = sub {
+        warning("Closing connection to MPD");
+        $STATE{running} = 0;
+        $STATE{mpd_socket}->close() if $STATE{mpd_socket};
+    };
+
 my $curl = WWW::Curl::Easy->new();
+
 
 sub compose_signed_url {
     my %params = @_;
@@ -55,7 +65,7 @@ sub mpd_connect {
 
     my $data = <$socket>;
     if (!$data) {
-        warn "Cannot connect to MPD";
+        info("Cannot connect to MPD");
         return;
     }
     $STATE{mpd_socket} = $socket;
@@ -86,7 +96,7 @@ sub make_request {
 
     my $retcode = $curl->perform();
     if ($retcode > 0) {
-        warn $curl->strerror($retcode);
+        error($curl->strerror($retcode));
         return '';
     }
     my $json = {};
@@ -94,7 +104,7 @@ sub make_request {
         $json = from_json($response);
         #say Dumper \ $json;
         if ($json->{error}) {
-            warn "[ERROR]\t$json->{message}";
+            error($json->{info});
         }
     }
     return $json;
@@ -102,17 +112,18 @@ sub make_request {
 
 sub handshake {
     my $token_url = compose_signed_url(method => 'auth.getToken');
-    warn "[INFO]\tRequesting an auth token from Last.fm";
+    info("Requesting an auth token from Last.fm");
     $STATE{token} = make_request($URL_ROOT.'?'.$token_url)->{token};
     if (!$STATE{token}) {
-        die 'Cannot get token';
+        error('Cannot get token');
+        die;
     }
     my $req = compose_signed_url(username => $USERNAME,
                        password => $PASSWORD,
                        method => "auth.getMobileSession",
                        token => $STATE{token});
 
-    warn "[INFO]\tRequesting a session key from Last.fm";
+    info("Requesting a session key from Last.fm");
 
     $STATE{session_key} = make_request($URL_ROOT, 1, $req)->{session}->{key};
     if (!$STATE{session_key}) {
@@ -147,9 +158,9 @@ sub get_track {
 sub update_current_song {
     my ($artist, $track) = get_track();
     if ($artist and $track) {
-        warn "[INFO]\tPlaying $track by $artist";
         if (!defined($STATE{track}) or !($STATE{track} eq $track)
          or !defined($STATE{artist}) or !($STATE{artist} eq $artist)) {
+            info("Playing $track by $artist");
             ($STATE{artist}, $STATE{track}) = ($artist, $track);
             $STATE{updated} = time;
             $STATE{scrobbled} = 0;
@@ -160,12 +171,12 @@ sub update_current_song {
 
 sub scrobble {
     if ($STATE{artist} and $STATE{track}) {
-        warn "[INFO]\tScrobbling track $STATE{track} by $STATE{artist}";
+        info("Scrobbling track $STATE{track} by $STATE{artist}");
         my $req = compose_signed_url(method => 'track.scrobble',
                            timestamp => time,
                            sk => $STATE{session_key},
                            artist => $STATE{artist}, track => $STATE{track});
-        warn "[DEBUG]\t$req";
+        debug("$req");
         make_request($URL_ROOT, 1, $req); 
     }
     $STATE{scrobbled} = 1;
@@ -173,7 +184,7 @@ sub scrobble {
 
 sub update_now_playing {
     if ($STATE{artist} and $STATE{track}) {
-        warn "[INFO]\tUpdating now playing $STATE{track} by $STATE{artist}";
+        info("Updating now playing $STATE{track} by $STATE{artist}");
         my $req = compose_signed_url(method => 'track.updateNowPlaying',
                            sk => $STATE{session_key},
                            artist => $STATE{artist}, track => $STATE{track});
@@ -189,22 +200,43 @@ sub run {
     my $last_updated = $STATE{updated};
     my ($artist, $track) = update_current_song;
 
-    if ($last_updated) {
-        say time - $STATE{updated};
-    }
     return if !$last_updated or !$STATE{artist} or $STATE{scrobbled}
               or !$STATE{track} or ((time - $STATE{updated}) < $MIN_PLAY_TIME);
 
     scrobble;
 }
 
-$SIG{TERM} = $SIG{INT} = sub {
-        warn "Closing connection to MPD";
-        $STATE{running} = 0;
-        $STATE{mpd_socket}->close() if $STATE{mpd_socket};
-    };
-
-while ($STATE{running}) {
-    run();
-    sleep $TICK;
+sub main {
+    while ($STATE{running}) {
+        run();
+        sleep $TICK;
+    }
 }
+
+sub daemonize {
+    setsid or die "setsid: $!";
+    my $pid = fork();
+    if ($pid < 0) {
+        die "fork: $!";
+    }
+    elsif ($pid) {
+        exit 0;
+    }
+    chdir "/";
+    umask 0;
+    foreach (0 .. (POSIX::sysconf (&POSIX::_SC_OPEN_MAX) || 1024)) {
+        POSIX::close $_;
+    }
+    open (my $pid_f, ">>$PID_FILE");
+
+    print $pid_f "$$";
+    close($pid_f);
+
+    $STATE{colorize} = 0;
+    open(STDIN, "</dev/null");
+    open(STDOUT, ">$LOG_FILE");
+    open(STDERR, ">$ERR_FILE");
+    main;
+}
+main;
+#daemonize;
