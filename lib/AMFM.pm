@@ -246,7 +246,7 @@ sub daemonize {
     foreach (0 .. (POSIX::sysconf (&POSIX::_SC_OPEN_MAX) || 1024)) {
         POSIX::close $_;
     }
-    open (my $pid_f, ">>$PID_FILE");
+    open (my $pid_f, ">$PID_FILE");
 
     print $pid_f "$$";
     close($pid_f);
