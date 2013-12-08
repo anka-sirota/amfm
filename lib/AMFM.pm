@@ -156,7 +156,8 @@ sub get_track {
         $song =~ s/[-_.\[\]\(\)0-9]{2,}//g;
         $song =~ s/^(?:-|\s)+//g;
         $song =~ s/(?:-|\s)+$//g;
-        ($artist, $track) = split(/(?:-|\s-|-\s)+/, $song);
+        say $song;
+        ($artist, $track) = split(/(?:-|\s+-+|-+\s+)+/, $song);
         if ($artist and $track) {
             $artist =~ s/_/ /g;
             $track =~ s/_/ /g;
