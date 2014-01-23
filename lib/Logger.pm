@@ -23,6 +23,8 @@ my %COLOR_LEVEL = (
     DEBUG => 'yellow',
 );
 
+my @stack;
+
 sub colorize {
     my ($level, $message) = @_;
 
@@ -35,12 +37,19 @@ sub colorize {
 
 sub log_message {
     my $level = shift;
+    my $msg = colorize($level, join(' ', @_));
+    my $last_msg = pop @stack;
+    if ($last_msg and $msg eq $last_msg) {
+        push @stack, $msg;
+        return;
+    }
     if ($level =~ /ERROR|DEBUG/) {
-        warn colorize($level, join(' ', @_));
+        warn $msg;
     }
     elsif ($level =~ /INFO|WARN/) {
-        say colorize($level, join(' ', @_));
+        say $msg;
     }
+    push @stack, $msg;
 }
 
 sub info {
