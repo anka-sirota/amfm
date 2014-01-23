@@ -10,7 +10,6 @@ use JSON qw/from_json/;
 use POSIX qw/strftime setsid/;
 use URI::Escape;
 use WWW::Curl::Easy qw/CURLOPT_HEADER CURLOPT_URL CURLOPT_TIMEOUT CURLOPT_HTTPHEADER CURLOPT_WRITEDATA CURLOPT_POSTFIELDS CURLOPT_POST/;
-use Exporter 'import';
 $| = 1;
 
 my $MPD_HOST = $ENV{MPD_HOST} || "localhost";
