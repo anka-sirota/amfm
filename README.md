@@ -3,7 +3,7 @@
 
 Simple Last.fm scrobbler for MPD written in Perl;
 
-## How it works
+### How it works
 
 This scrobbler is designed to scrobble internet radio.
 amfm uses MPD 'currentsong' command to fetch a title of the song. Before submitting any track amfm searches for correct track name and artist using Last.fm API 'track.search' method. If search results looks good enough then amfm updates 'Now Playing' status and scrobbles the corrected track after 30 seconds playback.
