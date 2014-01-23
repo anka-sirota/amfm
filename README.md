@@ -1,4 +1,5 @@
-## amfm
+## <a href="https://raw.github.com/anka-sirota/amfm/master/logo.png"><img src="https://raw.github.com/anka-sirota/amfm/master/logo_16x16.png" alt="Logo"/></a> amfm 
+
 
 Simple Last.fm scrobbler for MPD written in Perl;
 
