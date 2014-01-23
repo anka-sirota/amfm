@@ -2,7 +2,6 @@ package AMFM;
 
 use 5.014;
 use warnings;
-use lib './../lib/';
 use Data::Dumper;
 use Digest::MD5 qw/md5_hex/;
 use IO::Socket::INET;
@@ -55,15 +54,15 @@ sub compose_signed_url {
     my %params = @_;
     $params{api_key} = $API_KEY;
     $params{format} = 'json';
-    my $sign = (join '', map {(!($_ eq 'format' or $_ eq 'callback')) ? $_.$params{$_} : ''} sort keys %params).$SECRET;
-    my $res = join('&', (map {$_."=".uri_escape($params{$_})} keys %params), "api_sig=".md5_hex($sign));
+    my $sign = (join '', map {($_ eq 'format' or $_ eq 'callback' or !$params{$_}) ? '' : $_.$params{$_}} sort keys %params).$SECRET;
+    my $res = join('&', (map {($params{$_}) ? $_."=".uri_escape($params{$_}) : ''} keys %params), "api_sig=".md5_hex($sign));
     return $res;
 };
 
 sub mpd_connect {
     my $self = shift;
     my $socket = IO::Socket::INET->new(
-        PeerHost => $MPD_HOST, 
+        PeerHost => $MPD_HOST,
         PeerPort => $MPD_PORT,
         Proto => 'tcp',
     ) or die "Could not create socket: $!\n";
@@ -109,7 +108,6 @@ sub make_request {
     my $json = {};
     if ($response) {
         $json = from_json($response);
-        #say Dumper \ $json;
         if ($json->{error}) {
             error($json->{info});
         }
@@ -149,22 +147,49 @@ sub mpd_is_playing {
 sub get_track {
     my $self = shift;
     my $song = $self->mpd_command('currentsong');
-    my ($artist, $track) = ();
+    my ($artist, $track, $album) = ('', '', '');
     if ($song =~ /Title:\s+(.+)$/m) {
         $song = $1;
         # trying to remove track numbers
         $song =~ s/[-_.\[\]\(\)0-9]{2,}//g;
         $song =~ s/^(?:-|\s)+//g;
         $song =~ s/(?:-|\s)+$//g;
-        ($artist, $track) = split(/(?:-|\s+-+|-+\s+)+/, $song);
-        if ($artist and $track) {
+        ($artist, $track, $album) = split(/(?:-|\s+-+|-+\s+)+/, $song);
+        if ($artist and $track and !$album) {
             $artist =~ s/_/ /g;
+            $artist =~ s/^\s+//g;
+            $artist =~ s/\s+/ /g;
             $track =~ s/_/ /g;
+            $track =~ s/^\s+//g;
+            $track =~ s/\s+/ /g;
         }
         # filter out possible garbage
         my $title = '[a-zA-Z0-9_\t\n\f\r\cK]{3,}';
-        return () unless $artist and $track and $artist =~ /$title/ and $track =~ /$title/;
+        ($artist, $track) = () unless $artist and $track and $artist =~ /$title/ and $track =~ /$title/;
     }
+    # should not guess one-word track titles, giving up
+    if ($song =~ /^\w+$/) {
+        warning("Title '$song' is too short, giving up");
+        return ('', '');
+    }
+    if (!$artist or !$track or $album) {
+       # try to get track info from Last.FM
+       ($artist, $track) = $self->search_track($song);
+    }
+    else {
+        # check whether such a track exists
+        my ($old_artist, $old_track) = ($artist, $track);
+        ($artist, $track) = $self->search_track($track, $artist);
+        if (!($old_artist eq $artist) or !($old_track eq $track)) {
+            if ($old_track eq $artist) {
+                warning("Swapped '$artist' and '$track' for '$song'");
+            }
+            else {
+                warning("Corrected '$artist' and '$track' for '$song'");
+            }
+        }
+    }
+    warning("Could not parse '$song'") unless $artist and $track;
     return ($artist, $track);
 }
 
@@ -192,9 +217,49 @@ sub scrobble {
                            sk => $self->{session_key},
                            artist => $self->{artist}, track => $self->{track});
         debug("$req");
-        $self->make_request($URL_ROOT, 1, $req); 
+        $self->make_request($URL_ROOT, 1, $req);
     }
     $self->{scrobbled} = 1;
+}
+
+sub search_track {
+    my $self = shift;
+    my $title = shift;
+    my $title_artist = shift;
+    my ($artist, $track) = ();
+    my $req = $self->compose_signed_url(method => 'track.search',
+                       sk => $self->{session_key},
+                       track => $title, artist => $title_artist);
+    my $search_results = $self->make_request($URL_ROOT, 1, $req);
+    if ($search_results->{results}) {
+        my $total = $search_results->{results}->{'opensearch:totalResults'};
+        my $trackmatch;
+        if ($total > 1) {
+            # try to get best possible match
+            my %matches = map {$_->{listeners}, $_} @{$search_results->{results}->{trackmatches}->{track}};
+            for my $listeners (sort {$b <=> $a} keys %matches) {
+                my $match = $matches{$listeners};
+                my $match_artist = quotemeta(lc($match->{artist}));
+                my $match_track = quotemeta(lc($match->{name}));
+                my $l_title = lc($title);
+                if ($l_title =~ /$match_artist/ or $l_title =~ /$match_track/) {
+                    $trackmatch = $match;
+                    last;
+                }
+            }
+        }
+        elsif ($total == 1) {
+            $trackmatch = $search_results->{results}->{trackmatches}->{track};
+        }
+        if (defined($trackmatch)) {
+            $artist = $trackmatch->{artist};
+            $track = $trackmatch->{name};
+        }
+        else {
+            warning("No search matches");
+        }
+    }
+    return ($artist, $track);
 }
 
 sub update_now_playing {
@@ -234,6 +299,7 @@ sub main {
 sub daemonize {
     my $self = shift;
     setsid or die "setsid: $!";
+    say "Starting daemon";
     my $pid = fork();
     if ($pid < 0) {
         die "fork: $!";
@@ -256,6 +322,30 @@ sub daemonize {
     open(STDOUT, ">$LOG_FILE");
     open(STDERR, ">$ERR_FILE");
     $self->main;
+}
+
+sub stop {
+    my $self = shift;
+    my $pid_f;
+    my $is_open = open($pid_f, '<', $PID_FILE);
+    if ($is_open) {
+        my $pid = <$pid_f>;
+        close $pid_f;
+        if ($pid) {
+            my $exists = kill 0, $pid;
+            while ($exists) {
+                say "Waiting for process: $pid, $exists";
+                $exists = kill 0, $pid;
+                kill 'TERM', $pid;
+                sleep 1;
+            }
+        }
+        say "Removing pidfile";
+        unlink $PID_FILE;
+    }
+    else {
+        say "No pidfile found";
+    }
 }
 
 1;
