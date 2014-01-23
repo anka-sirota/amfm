@@ -14,4 +14,5 @@ Please keep in mind that this is still a work-in-progress.
 
 There's not much configuration available yet. Everything script needs can be supplied through the environment variables:
 
-        MPD_PORT=6600 MPD_HOST=locahost LASTFM_USERNAME=foo LASTFM_PASSWORD=bar perl amfm.pl --start|--stop|--restart
+        MPD_PORT=6600 MPD_HOST=locahost LASTFM_USERNAME=foo LASTFM_PASSWORD=bar \
+        perl amfm.pl --start|--stop|--restart
