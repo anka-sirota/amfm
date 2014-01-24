@@ -25,6 +25,7 @@ my %COLOR_LEVEL = (
 );
 
 my @stack;
+my $LOG_DUPL_MSG = $ENV{LOG_DUPL_MSG} || 0;
 
 sub colorize {
     my ($level, $message) = @_;
@@ -38,12 +39,15 @@ sub colorize {
 
 sub log_message {
     my $level = shift;
-    my $msg = colorize($level, join(' ', @_));
-    my $last_msg = pop @stack;
     my $time = strftime "%F %T", localtime $^T;
-    if ($last_msg and $msg eq $last_msg) {
+    my $msg = colorize($level, join(' ', @_));
+    if (!$LOG_DUPL_MSG) {
+        my $last_msg = pop @stack;
+        if ($last_msg and $msg eq $last_msg) {
+            push @stack, $msg;
+            return;
+        }
         push @stack, $msg;
-        return;
     }
     if ($level =~ /ERROR|DEBUG/) {
         warn "$time $msg";
@@ -51,7 +55,6 @@ sub log_message {
     elsif ($level =~ /INFO|WARN/) {
         say "$time $msg";
     }
-    push @stack, $msg;
 }
 
 sub info {
