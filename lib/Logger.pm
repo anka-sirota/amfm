@@ -2,6 +2,7 @@ package Logger;
 
 use 5.014;
 use warnings;
+use POSIX qw/strftime/;
 use Exporter 'import';
 our @EXPORT_OK = qw/debug error warning info/;
 
@@ -30,7 +31,7 @@ sub colorize {
 
     if ($level =~ /ERROR|DEBUG/ && -t STDERR || $level =~ /INFO|WARN/ && -t STDOUT) {
         my $color = $COLORS{$COLOR_LEVEL{$level}};
-        return "\033[".$color."m[$level]\033[0m\t".$message;
+        return "\033[".$color."m[$level]\033[0m ".$message;
     }
     return "[$level] $message";
 }
@@ -39,15 +40,16 @@ sub log_message {
     my $level = shift;
     my $msg = colorize($level, join(' ', @_));
     my $last_msg = pop @stack;
+    my $time = strftime "%F %T", localtime $^T;
     if ($last_msg and $msg eq $last_msg) {
         push @stack, $msg;
         return;
     }
     if ($level =~ /ERROR|DEBUG/) {
-        warn $msg;
+        warn "$time $msg";
     }
     elsif ($level =~ /INFO|WARN/) {
-        say $msg;
+        say "$time $msg";
     }
     push @stack, $msg;
 }
