@@ -7,8 +7,7 @@ use AMFM;
 use parent 'AMFM';
 
 sub new {
-    my $class = shift;
-    my $title = shift;
+    my ($class, $title) = @_;
     my %self = (
         title => $title,
         curl => WWW::Curl::Easy->new(),
@@ -16,19 +15,9 @@ sub new {
     return bless \%self, $class;
 }
 
-sub mpd_command {
-    my ($self, $cmd) = @_;
-    if ($cmd eq 'currentsong') {
-        return "Title: $self->{title}";
-     }
-    else {
-        die 'Unimplemented command';
-    }
-}
-
 sub get_track_test {
     my $self = shift;
-    my @track = $self->get_track();
+    my @track = $self->parse_title($self->{title});
     if (!defined($track[0])) {
         @track = ('', '');
     }
