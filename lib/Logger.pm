@@ -39,7 +39,7 @@ sub colorize {
 
 sub log_message {
     my $level = shift;
-    my $time = strftime "%F %T", localtime $^T;
+    my $time = strftime('%d-%m-%Y %H:%M:%S', localtime());
     my $msg = colorize($level, join(' ', @_));
     if (!$LOG_DUPL_MSG) {
         my $last_msg = pop @stack;
