@@ -9,6 +9,7 @@ use Logger qw/error debug warning info/;
 use JSON qw/from_json/;
 use POSIX qw/strftime setsid/;
 use URI::Escape;
+use Net::Ping;
 use WWW::Curl::Easy qw/CURLOPT_HEADER CURLOPT_URL CURLOPT_TIMEOUT CURLOPT_HTTPHEADER CURLOPT_WRITEDATA CURLOPT_POSTFIELDS CURLOPT_POST/;
 $| = 1;
 
@@ -28,8 +29,9 @@ my $URL_ROOT = "https://ws.audioscrobbler.com/2.0/";
 sub new {
     my $class = shift;
     my %self = (
-        artist => undef,
-        track => undef,
+        artist => '',
+        track => '',
+        title => '',
         token => undef,
         session_key => undef,
         mpd_socket => undef,
@@ -82,13 +84,32 @@ sub mpd_command {
     $socket->send("$cmd\r\n");
     my $res = do { local $/ = "OK\n"; <$socket>};
     $res =~ s/\nOK\n//g;
+    if ($cmd eq 'currentsong') {
+        if ($res =~ /Title:\s+(.+)$/m) {
+            $res = $1;
+        }
+        else {
+            $res = '';
+        }
+    }
     return $res;
+}
+
+sub can_connect {
+    my $p = Net::Ping->new;
+    $p->close();
+    if (!$p->ping("last.fm", 1)) {
+        error("Last.fm is unreachable");
+        return '';
+    }
+    return 1;
 }
 
 sub make_request {
     my $self = shift;
     my ($url, $post, $body) = @_;
     my $response;
+    #say "$url/?$body";
 
     $self->{curl}->setopt(WWW::Curl::Easy::CURLOPT_URL, $url);
     if ($post) {
@@ -143,78 +164,90 @@ sub mpd_is_playing {
     return ($status{state} =~ /play/) ? 1 : 0;
 }
 
-sub get_track {
-    my $self = shift;
-    my $song = $self->mpd_command('currentsong');
+sub parse_title {
+    my ($self, $title) = @_;
     my ($artist, $track, $album) = ('', '', '');
-    if ($song =~ /Title:\s+(.+)$/m) {
-        $song = $1;
-        # trying to remove track numbers
-        $song =~ s/[-_.\[\]\(\)0-9]{2,}//g;
-        $song =~ s/^(?:-|\s)+//g;
-        $song =~ s/(?:-|\s)+$//g;
-        ($artist, $track, $album) = split(/(?:-|\s+-+|-+\s+)+/, $song);
-        if ($artist and $track and !$album) {
-            $artist =~ s/_/ /g;
-            $artist =~ s/^\s+//g;
-            $artist =~ s/\s+/ /g;
-            $track =~ s/_/ /g;
-            $track =~ s/^\s+//g;
-            $track =~ s/\s+/ /g;
-        }
-        # filter out possible garbage
-        my $title = '[a-zA-Z0-9_\t\n\f\r\cK]{3,}';
-        ($artist, $track) = () unless $artist and $track and $artist =~ /$title/ and $track =~ /$title/;
+    # trying to remove track numbers
+    #say "Before: $title";
+    given ($title) {
+        s/_/ /g;
+        s/[-.\[\]\(\)0-9]{2,}//g;
+        s/^(?:-|\s)+//g;
+        s/(?:-|\s)+$//g;
+        s/,\s+The//g;
     }
+    #say "After: $title";
+    ($artist, $track, $album) = split(/(?:-|\s+-+|-+\s+)+/, $title);
+    for ($artist, $track, $album) {
+        next unless $_;
+        s/^\s+//g;
+        s/(?:-|\s)+$//g;
+        s/\s+/ /g;
+    }
+    #say "$artist | $track | $album";
     # should not guess one-word track titles, giving up
-    if ($song =~ /^\w+$/) {
-        warning("Title '$song' is too short, giving up");
+    if ($title =~ /^\w+$/) {
+        warning("Title '$title' is too short, giving up");
         return ('', '');
     }
-    if (!$artist or !$track or $album) {
-       # try to get track info from Last.FM
-       ($artist, $track) = $self->search_track($song);
+    my ($old_artist, $old_track) = ($artist, $track);
+    if ($album) {
+        # try to get track info from Last.FM
+        ($artist, $track) = $self->search_track($title);
+        if ((!$artist or !$track) and ($old_track and $old_track)) {
+            ($artist, $track) = $self->search_track($old_track, $old_artist);
+            if (!$artist or !$track) {
+                ($artist, $track) = $self->search_track($album, $old_artist);
+            }
+        }
+    }
+    elsif (!$artist or !$track) {
+        # try to get track info from Last.FM
+        ($artist, $track) = $self->search_track($title);
     }
     else {
         # check whether such a track exists
-        my ($old_artist, $old_track) = ($artist, $track);
+        ($old_artist, $old_track) = ($artist, $track);
         ($artist, $track) = $self->search_track($track, $artist);
-        if (!($old_artist eq $artist) or !($old_track eq $track)) {
-            if ($old_track eq $artist) {
-                warning("Swapped '$artist' and '$track' for '$song'");
-            }
-            else {
-                warning("Corrected '$artist' and '$track' for '$song'");
-            }
-        }
     }
-    warning("Could not parse '$song'") unless $artist and $track;
+    if ($artist and $track and (!($old_artist eq $artist) or !($old_track eq $track))) {
+        warning("Corrected '$artist' and '$track' for '$title'");
+    }
+    warning("Could not parse '$title'") unless $artist and $track;
     return ($artist, $track);
 }
 
 sub update_current_song {
     my $self = shift;
-    my ($artist, $track) = $self->get_track();
+    my $title = $self->mpd_command('currentsong');
+    return ($self->{artist}, $self->{track}) unless !($self->{title} eq $title);
+
+    my ($artist, $track) = $self->parse_title($title);
     if ($artist and $track) {
-        if (!defined($self->{track}) or !($self->{track} eq $track)
-         or !defined($self->{artist}) or !($self->{artist} eq $artist)) {
+        if (!defined($self->{title}) or !($self->{title} eq $title)) {
             info("Playing $track by $artist");
-            ($self->{artist}, $self->{track}) = ($artist, $track);
             $self->{updated} = time;
             $self->{scrobbled} = 0;
-            $self->update_now_playing;
+            $self->{artist} = $artist;
+            $self->{track} = $track;
+            $self->update_now_playing($artist, $track);
         }
     }
+    else {
+        $self->{scrobbled} = 1;
+    }
+    $self->{title} = $title;
+    return ($artist, $track);
 }
 
 sub scrobble {
-    my $self = shift;
-    if ($self->{artist} and $self->{track}) {
-        info("Scrobbling track $self->{track} by $self->{artist}");
+    my ($self, $artist, $track) = @_;
+    if ($artist and $track) {
+        info("Scrobbling track $track by $artist");
         my $req = $self->compose_signed_url(method => 'track.scrobble',
                            timestamp => time,
                            sk => $self->{session_key},
-                           artist => $self->{artist}, track => $self->{track});
+                           artist => $artist, track => $track);
         debug("$req");
         $self->make_request($URL_ROOT, 1, $req);
     }
@@ -224,8 +257,8 @@ sub scrobble {
 sub search_track {
     my $self = shift;
     my $title = shift;
-    my $title_artist = shift;
-    my ($artist, $track) = ();
+    my $title_artist = shift || '';
+    my ($artist, $track) = ('', '');
     my $req = $self->compose_signed_url(method => 'track.search',
                        sk => $self->{session_key},
                        track => $title, artist => $title_artist);
@@ -233,19 +266,42 @@ sub search_track {
     if ($search_results->{results}) {
         my $total = $search_results->{results}->{'opensearch:totalResults'};
         my $trackmatch;
+        if ($total == 0 and $title_artist) {
+            return $self->search_track("$title_artist - $title");
+        }
         if ($total > 1) {
             # try to get best possible match
+            my $l_title_artist = lc($title_artist);
             my %matches = map {$_->{listeners}, $_} @{$search_results->{results}->{trackmatches}->{track}};
-            for my $listeners (sort {$b <=> $a} keys %matches) {
-                my $match = $matches{$listeners};
-                my $match_artist = quotemeta(lc($match->{artist}));
-                my $match_track = quotemeta(lc($match->{name}));
-                my $l_title = lc($title);
-                if ($l_title =~ /$match_artist/ or $l_title =~ /$match_track/) {
-                    $trackmatch = $match;
-                    last;
+            my $cmp = sub {
+                my $a_artist = $matches{$_[0]}->{artist};
+                my $a_track = $matches{$_[0]}->{name};
+                my $_a_artist = quotemeta($a_artist);
+                my $_a_track = quotemeta($a_track);
+
+                my $b_artist = $matches{$_[1]}->{artist};
+                my $b_track = $matches{$_[1]}->{name};
+                my $_b_artist = quotemeta($b_artist);
+                my $_b_track = quotemeta($b_track);
+
+                my $_artist = quotemeta($title_artist);
+                my $_title = quotemeta($title);
+                my ($m_artist_a, $m_artist_b) = (2, 2);
+
+                if ($_artist) {
+                    $m_artist_a = ($title_artist =~ /$_a_artist/i or $a_artist =~ /$_artist/i) + 0;
+                    $m_artist_b = ($title_artist =~ /$_b_artist/i or $b_artist =~ /$_artist/i) + 0;
                 }
-            }
+                #say "$_a_artist: $m_artist_a, $_b_artist: $m_artist_b";#, $title_artist, $title";
+                return $m_artist_b <=> $m_artist_a unless $m_artist_a == $m_artist_b;
+
+                my $m_both_a = ($title =~ /$_a_artist/i and $title =~ /$_a_track/i);
+                my $m_both_b = ($title =~ /$_b_artist/i and $title =~ /$_b_track/i);
+                return $m_both_b <=> $m_both_a unless $m_both_a == $m_both_b;
+
+                return $_[1] <=> $_[0];
+            };
+            $trackmatch = $matches{(sort {$cmp->($a, $b)} keys %matches)[0]};
         }
         elsif ($total == 1) {
             $trackmatch = $search_results->{results}->{trackmatches}->{track};
@@ -262,12 +318,12 @@ sub search_track {
 }
 
 sub update_now_playing {
-    my $self = shift;
-    if ($self->{artist} and $self->{track}) {
-        info("Updating now playing $self->{track} by $self->{artist}");
+    my ($self, $artist, $track) = @_;
+    if ($artist and $track) {
+        info("Updating now playing $track by $artist");
         my $req = $self->compose_signed_url(method => 'track.updateNowPlaying',
                            sk => $self->{session_key},
-                           artist => $self->{artist}, track => $self->{track});
+                           artist => $artist, track => $track);
         $self->make_request($URL_ROOT, 1, $req);
     }
 }
@@ -276,15 +332,16 @@ sub run {
     my $self = shift;
     $self->handshake unless $self->{session_key};
     $self->mpd_connect unless $self->{mpd_socket};
-    return unless $self->mpd_is_playing();
+    return unless $self->mpd_is_playing;
+    return unless $self->can_connect;
 
     my $last_updated = $self->{updated};
-    my ($artist, $track) = $self->update_current_song;
+    $self->update_current_song;
 
     return if !$last_updated or !$self->{artist} or $self->{scrobbled}
               or !$self->{track} or ((time - $self->{updated}) < $MIN_PLAY_TIME);
 
-    $self->scrobble;
+    $self->scrobble($self->{artist}, $self->{track});
 }
 
 sub main {
@@ -331,12 +388,19 @@ sub stop {
         my $pid = <$pid_f>;
         close $pid_f;
         if ($pid) {
+            my $count = 0;
             my $exists = kill 0, $pid;
+            say "Waiting for process: $pid, $exists";
             while ($exists) {
-                say "Waiting for process: $pid, $exists";
                 $exists = kill 0, $pid;
-                kill 'TERM', $pid;
+                if ($count > 60) {
+                    kill 'KILL', $pid;
+                }
+                else {
+                    kill 'TERM', $pid;
+                }
                 sleep 1;
+                $count ++;
             }
         }
         say "Removing pidfile";
