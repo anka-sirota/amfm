@@ -11,6 +11,8 @@ use POSIX qw/strftime setsid/;
 use URI::Escape;
 use Net::Ping;
 use WWW::Curl::Easy qw/CURLOPT_HEADER CURLOPT_URL CURLOPT_TIMEOUT CURLOPT_HTTPHEADER CURLOPT_WRITEDATA CURLOPT_POSTFIELDS CURLOPT_POST/;
+use List::MoreUtils qw/all zip/;
+binmode STDOUT, ':utf8';
 $| = 1;
 
 my $MPD_HOST = $ENV{MPD_HOST} || "localhost";
@@ -56,7 +58,7 @@ sub compose_signed_url {
     $params{api_key} = $API_KEY;
     $params{format} = 'json';
     my $sign = (join '', map {($_ eq 'format' or $_ eq 'callback' or !$params{$_}) ? '' : $_.$params{$_}} sort keys %params).$SECRET;
-    my $res = join('&', (map {($params{$_}) ? $_."=".uri_escape($params{$_}) : ''} keys %params), "api_sig=".md5_hex($sign));
+    my $res = join('&', (map {($params{$_}) ? $_."=".uri_escape_utf8($params{$_}) : ''} keys %params), "api_sig=".md5_hex($sign));
     return $res;
 };
 
@@ -109,7 +111,7 @@ sub make_request {
     my $self = shift;
     my ($url, $post, $body) = @_;
     my $response;
-    #say "$url/?$body";
+    #say "$url?$body";
 
     $self->{curl}->setopt(WWW::Curl::Easy::CURLOPT_URL, $url);
     if ($post) {
@@ -166,52 +168,26 @@ sub mpd_is_playing {
 
 sub parse_title {
     my ($self, $title) = @_;
-    my ($artist, $track, $album) = ('', '', '');
-    # trying to remove track numbers
-    #say "Before: $title";
+    my ($artist, $track, $album);
+    # trying to remove track numbers and other garbage
     given ($title) {
-        s/_/ /g;
-        s/[-.\[\]\(\)0-9]{2,}//g;
+        s/(?:_|\s)+/ /g;
+        s/(?:`|\[[^\]]+\])//g;
+        s/[.\[\]\(\)0-9]{2,}//g;
         s/^(?:-|\s)+//g;
         s/(?:-|\s)+$//g;
         s/,\s+The//g;
+        # removing station title
+        s/^[^:]+: //g;
     }
-    #say "After: $title";
-    ($artist, $track, $album) = split(/(?:-|\s+-+|-+\s+)+/, $title);
-    for ($artist, $track, $album) {
-        next unless $_;
-        s/^\s+//g;
-        s/(?:-|\s)+$//g;
-        s/\s+/ /g;
-    }
-    #say "$artist | $track | $album";
-    # should not guess one-word track titles, giving up
-    if ($title =~ /^\w+$/) {
-        warning("Title '$title' is too short, giving up");
-        return ('', '');
-    }
-    my ($old_artist, $old_track) = ($artist, $track);
-    if ($album) {
-        # try to get track info from Last.FM
-        ($artist, $track) = $self->search_track($title);
-        if ((!$artist or !$track) and ($old_track and $old_track)) {
-            ($artist, $track) = $self->search_track($old_track, $old_artist);
-            if (!$artist or !$track) {
-                ($artist, $track) = $self->search_track($album, $old_artist);
-            }
-        }
-    }
-    elsif (!$artist or !$track) {
-        # try to get track info from Last.FM
-        ($artist, $track) = $self->search_track($title);
+    ($artist, $track, $album) = split(/\s*-+\s*/, $title);
+    #say "SPLIT: $artist, $track";
+    if ($artist and $track) {
+        ($artist, $track) = $self->search_track("$artist - $track".(($album) ? " - $album" : ''));
     }
     else {
-        # check whether such a track exists
-        ($old_artist, $old_track) = ($artist, $track);
-        ($artist, $track) = $self->search_track($track, $artist);
-    }
-    if ($artist and $track and (!($old_artist eq $artist) or !($old_track eq $track))) {
-        warning("Corrected '$artist' and '$track' for '$title'");
+        ($artist, $track) = ('', '');
+        warning("Title '$title' is too short, giving up");
     }
     warning("Could not parse '$title'") unless $artist and $track;
     return ($artist, $track);
@@ -254,54 +230,46 @@ sub scrobble {
     $self->{scrobbled} = 1;
 }
 
+sub contains {
+    my ($target, @substrings) = @_;
+    my $q_target = quotemeta($target);
+    for my $str (@substrings) {
+        my $q_str = quotemeta($str);
+        return 0 unless $target =~ /$q_str/i;
+    }
+    return 1;
+}
+
 sub search_track {
     my $self = shift;
     my $title = shift;
-    my $title_artist = shift || '';
     my ($artist, $track) = ('', '');
     my $req = $self->compose_signed_url(method => 'track.search',
                        sk => $self->{session_key},
-                       track => $title, artist => $title_artist);
+                       track => $title, limit => '10');
     my $search_results = $self->make_request($URL_ROOT, 1, $req);
-    if ($search_results->{results}) {
-        my $total = $search_results->{results}->{'opensearch:totalResults'};
+    my $results = $search_results->{results};
+    if ($results) {
+        my $total = $results->{'opensearch:totalResults'};
         my $trackmatch;
-        if ($total == 0 and $title_artist) {
-            return $self->search_track("$title_artist - $title");
-        }
         if ($total > 1) {
             # try to get best possible match
-            my $l_title_artist = lc($title_artist);
-            my %matches = map {$_->{listeners}, $_} @{$search_results->{results}->{trackmatches}->{track}};
+            my %by_listeners = map {$_->{listeners}, $_} @{$results->{trackmatches}->{track}};
             my $cmp = sub {
-                my $a_artist = $matches{$_[0]}->{artist};
-                my $a_track = $matches{$_[0]}->{name};
-                my $_a_artist = quotemeta($a_artist);
-                my $_a_track = quotemeta($a_track);
+                my $a_artist = $by_listeners{$_[0]}->{artist};
+                my $a_track = $by_listeners{$_[0]}->{name};
 
-                my $b_artist = $matches{$_[1]}->{artist};
-                my $b_track = $matches{$_[1]}->{name};
-                my $_b_artist = quotemeta($b_artist);
-                my $_b_track = quotemeta($b_track);
+                my $b_artist = $by_listeners{$_[1]}->{artist};
+                my $b_track = $by_listeners{$_[1]}->{name};
 
-                my $_artist = quotemeta($title_artist);
-                my $_title = quotemeta($title);
-                my ($m_artist_a, $m_artist_b) = (2, 2);
-
-                if ($_artist) {
-                    $m_artist_a = ($title_artist =~ /$_a_artist/i or $a_artist =~ /$_artist/i) + 0;
-                    $m_artist_b = ($title_artist =~ /$_b_artist/i or $b_artist =~ /$_artist/i) + 0;
-                }
-                #say "$_a_artist: $m_artist_a, $_b_artist: $m_artist_b";#, $title_artist, $title";
-                return $m_artist_b <=> $m_artist_a unless $m_artist_a == $m_artist_b;
-
-                my $m_both_a = ($title =~ /$_a_artist/i and $title =~ /$_a_track/i);
-                my $m_both_b = ($title =~ /$_b_artist/i and $title =~ /$_b_track/i);
+                #say "$_a_artist: $m_artist_a, $_b_artist: $m_artist_b";#, $title";
+                my $m_both_a = contains($title, $a_artist, $a_track);
+                my $m_both_b = contains($title, $b_artist, $b_track);
                 return $m_both_b <=> $m_both_a unless $m_both_a == $m_both_b;
 
                 return $_[1] <=> $_[0];
             };
-            $trackmatch = $matches{(sort {$cmp->($a, $b)} keys %matches)[0]};
+            $trackmatch = $by_listeners{(sort {$cmp->($a, $b)} keys %by_listeners)[0]};
         }
         elsif ($total == 1) {
             $trackmatch = $search_results->{results}->{trackmatches}->{track};
