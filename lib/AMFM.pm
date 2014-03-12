@@ -85,6 +85,7 @@ sub mpd_command {
     my $socket = $self->{mpd_socket};
     $socket->send("$cmd\r\n");
     my $res = do { local $/ = "OK\n"; <$socket>};
+    return '' if !$res;
     $res =~ s/\nOK\n//g;
     if ($cmd eq 'currentsong') {
         if ($res =~ /Title:\s+(.+)$/m) {
@@ -100,7 +101,7 @@ sub mpd_command {
 sub can_connect {
     my $p = Net::Ping->new;
     $p->close();
-    if (!$p->ping("last.fm", 1)) {
+    if (!$p->ping("ws.audioscrobbler.com", 1)) {
         error("Last.fm is unreachable");
         return '';
     }
@@ -126,6 +127,9 @@ sub make_request {
     if ($retcode > 0) {
         error($self->{curl}->strerror($retcode));
         return '';
+    }
+    if (!defined($response)) {
+        error("No response from: $url");
     }
     my $json = {};
     if ($response) {
@@ -163,33 +167,43 @@ sub handshake {
 sub mpd_is_playing {
     my $self = shift;
     my %status = split(/:\s|\n/, $self->mpd_command("status"));
-    return ($status{state} =~ /play/) ? 1 : 0;
+    return (defined(%status) and defined($status{state}) and $status{state} =~ /play/) ? 1 : 0;
 }
 
 sub parse_title {
     my ($self, $title) = @_;
     my ($artist, $track, $album);
-    # trying to remove track numbers and other garbage
+    my $old_title = $title;
+    #say "Before: $title";
     given ($title) {
         s/(?:_|\s)+/ /g;
-        s/(?:`|\[[^\]]+\])//g;
+        # removing remixes
+        s/\[[^\]]+\]//g;
+        s/\([^\)]+\)//g;
+        # removing track numbers
         s/[.\[\]\(\)0-9]{2,}//g;
         s/^(?:-|\s)+//g;
-        s/(?:-|\s)+$//g;
-        s/,\s+The//g;
+        s/\s+$//g;
+        #s/,\s+The//g;
         # removing station title
         s/^[^:]+: //g;
     }
-    ($artist, $track, $album) = split(/\s*-+\s*/, $title);
+    #say "After: $title";
+    ($artist, $track, $album) = split(/\s+-+\s+/, $title);
+    if (!$artist or !$track) {
+        ($artist, $track, $album) = split(/\s*-+\s*/, $title);
+    }
     #say "SPLIT: $artist, $track";
     if ($artist and $track) {
-        ($artist, $track) = $self->search_track("$artist - $track".(($album) ? " - $album" : ''));
+        my ($new_artist, $new_track) = $self->search_track("$artist - $track".(($album) ? " - $album" : ''));
+        if ($new_artist and $new_track) {
+            ($artist, $track) = ($new_artist, $new_track);
+        }
     }
     else {
         ($artist, $track) = ('', '');
-        warning("Title '$title' is too short, giving up");
     }
-    warning("Could not parse '$title'") unless $artist and $track;
+    warning("Could not parse '$old_title'") unless $artist and $track;
     return ($artist, $track);
 }
 
@@ -246,7 +260,7 @@ sub search_track {
     my ($artist, $track) = ('', '');
     my $req = $self->compose_signed_url(method => 'track.search',
                        sk => $self->{session_key},
-                       track => $title, limit => '10');
+                       track => $title, limit => '100');
     my $search_results = $self->make_request($URL_ROOT, 1, $req);
     my $results = $search_results->{results};
     if ($results) {
@@ -262,7 +276,7 @@ sub search_track {
                 my $b_artist = $by_listeners{$_[1]}->{artist};
                 my $b_track = $by_listeners{$_[1]}->{name};
 
-                #say "$_a_artist: $m_artist_a, $_b_artist: $m_artist_b";#, $title";
+                #say "$a_artist: $a_track, $b_artist: $b_track";#, $title";
                 my $m_both_a = contains($title, $a_artist, $a_track);
                 my $m_both_b = contains($title, $b_artist, $b_track);
                 return $m_both_b <=> $m_both_a unless $m_both_a == $m_both_b;
@@ -281,6 +295,9 @@ sub search_track {
         else {
             warning("No search matches");
         }
+    }
+    else {
+        warning("No search matches");
     }
     return ($artist, $track);
 }
