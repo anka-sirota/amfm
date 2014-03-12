@@ -12,6 +12,13 @@ amfm does not yet store any history so it scrobbles tracks only when it's possib
 
 Please keep in mind that this is still a work-in-progress.
 
+### Issues
+
+Parsing arbitrary song title without any additional information is a bit of a pain, so few compromises had to be made:
+
+* remix additions are stripped from titles, if possible;
+* titles containing no information about artist are skipped;
+
 ### Usage
 
 There's not much configuration available yet. Everything script needs can be supplied through the environment variables:
