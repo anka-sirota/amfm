@@ -87,14 +87,6 @@ sub mpd_command {
     my $res = do { local $/ = "OK\n"; <$socket>};
     return '' if !$res;
     $res =~ s/\nOK\n//g;
-    if ($cmd eq 'currentsong') {
-        if ($res =~ /Title:\s+(.+)$/m) {
-            $res = $1;
-        }
-        else {
-            $res = '';
-        }
-    }
     return $res;
 }
 
@@ -167,7 +159,7 @@ sub handshake {
 sub mpd_is_playing {
     my $self = shift;
     my %status = split(/:\s|\n/, $self->mpd_command("status"));
-    return (defined(%status) and defined($status{state}) and $status{state} =~ /play/) ? 1 : 0;
+    return (%status and defined($status{state}) and $status{state} =~ /play/) ? 1 : 0;
 }
 
 sub parse_title {
@@ -209,10 +201,29 @@ sub parse_title {
 
 sub update_current_song {
     my $self = shift;
-    my $title = $self->mpd_command('currentsong');
+    my ($title, $length, $artist, $track) = ('', '', '', '');
+    my $status = $self->mpd_command('currentsong');
+    debug("$status");
+
+    if ($status =~ /Title:\s+(.+)$/m) {
+        ($title, $track) = ($1, $1);
+        debug("Track title: $track");
+    }
+    if ($status =~ /Artist:\s+(.+)$/m) {
+        $artist = $1;
+        debug("Track artist: $artist");
+    }
+    if ($status =~ /Time:\s+(\d+)$/m) {
+        $length = int($1);
+        debug("Track length: $length seconds");
+    }
+
     return ($self->{artist}, $self->{track}) unless !($self->{title} eq $title);
 
-    my ($artist, $track) = $self->parse_title($title);
+    if (!$length) {
+        debug('Length unknown, searching for the track online');
+        ($artist, $track) = $self->parse_title($title);
+    }
     if ($artist and $track) {
         if (!defined($self->{title}) or !($self->{title} eq $title)) {
             info("Playing $track by $artist");
@@ -220,6 +231,7 @@ sub update_current_song {
             $self->{scrobbled} = 0;
             $self->{artist} = $artist;
             $self->{track} = $track;
+            $self->{minplaytime} = ($length) ? $length / 2 : $MIN_PLAY_TIME;
             $self->update_now_playing($artist, $track);
         }
     }
@@ -227,6 +239,7 @@ sub update_current_song {
         $self->{scrobbled} = 1;
     }
     $self->{title} = $title;
+    debug(Dumper $self);
     return ($artist, $track);
 }
 
@@ -324,7 +337,7 @@ sub run {
     $self->update_current_song;
 
     return if !$last_updated or !$self->{artist} or $self->{scrobbled}
-              or !$self->{track} or ((time - $self->{updated}) < $MIN_PLAY_TIME);
+              or !$self->{track} or ((time - $self->{updated}) < $self->{minplaytime});
 
     $self->scrobble($self->{artist}, $self->{track});
 }
