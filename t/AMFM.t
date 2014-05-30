@@ -4,6 +4,18 @@ use Test::More;
 use AMFMTest;
 use utf8;
 
+# TODO should pass MPD-style statuses
+# e.g.:
+    #Time: 563
+    #Artist: London After Midnight
+    #Title: 99
+    #Album: Psycho Magnet (re-release)
+    #Track: 17
+    #Date: 2003
+    #Genre: Gothic
+    #Pos: 22
+# so that testing titles with tags would also be possible
+
 my %test_titles = (
     'I want to be free' => ' <> ', # too much artists have the same song, skipping
     '06 - The Abhorrent Rays' => ' <> ', # -#-
