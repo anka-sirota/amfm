@@ -24,6 +24,7 @@ my $LOG_FILE = $ENV{LOG_FILE} || '/tmp/amfm.log';
 my $ERR_FILE = $ENV{ERR_FILE} || '/tmp/amfm.err';
 my $TICK = 5;
 my $MIN_PLAY_TIME = 30;
+my $NOW_PLAYING_INTERVAL = 20;
 my $API_KEY = "7c04baa41513c100f7544a329ac97638";
 my $SECRET = "c1e017252469c6387459e6e7b51d6f53";
 my $URL_ROOT = "https://ws.audioscrobbler.com/2.0/";
@@ -38,8 +39,9 @@ sub new {
         session_key => undef,
         mpd_socket => undef,
         updated => undef,
-        scrobbled => 0,
-        running => 1,
+        started => undef,
+        is_scrobbled => 0,
+        is_running => 1,
         colorize => 1,
         curl => WWW::Curl::Easy->new(),
     );
@@ -48,7 +50,7 @@ sub new {
 sub quit {
     my $self = shift;
     warning("Closing connection to MPD");
-    $self->{running} = 0;
+    $self->{is_running} = 0;
     $self->{mpd_socket}->close() if $self->{mpd_socket};
 }
 
@@ -203,19 +205,19 @@ sub update_current_song {
     my $self = shift;
     my ($title, $length, $artist, $track) = ('', '', '', '');
     my $status = $self->mpd_command('currentsong');
-    debug("$status");
+    #debug("$status");
 
     if ($status =~ /Title:\s+(.+)$/m) {
         ($title, $track) = ($1, $1);
-        debug("Track title: $track");
+        #debug("Track title: $track");
     }
     if ($status =~ /Artist:\s+(.+)$/m) {
         $artist = $1;
-        debug("Track artist: $artist");
+        #debug("Track artist: $artist");
     }
     if ($status =~ /Time:\s+(\d+)$/m) {
         $length = int($1);
-        debug("Track length: $length seconds");
+        #debug("Track length: $length seconds");
     }
 
     return ($self->{artist}, $self->{track}) unless !($self->{title} eq $title);
@@ -227,19 +229,18 @@ sub update_current_song {
     if ($artist and $track) {
         if (!defined($self->{title}) or !($self->{title} eq $title)) {
             info("Playing $track by $artist");
-            $self->{updated} = time;
-            $self->{scrobbled} = 0;
+            $self->{started} = time;
+            $self->{is_scrobbled} = 0;
             $self->{artist} = $artist;
             $self->{track} = $track;
             $self->{minplaytime} = ($length) ? $length / 2 : $MIN_PLAY_TIME;
-            $self->update_now_playing($artist, $track);
         }
     }
     else {
-        $self->{scrobbled} = 1;
+        $self->{is_scrobbled} = 1;
     }
     $self->{title} = $title;
-    debug(Dumper $self);
+    #debug(Dumper $self);
     return ($artist, $track);
 }
 
@@ -254,7 +255,7 @@ sub scrobble {
         debug("$req");
         $self->make_request($URL_ROOT, 1, $req);
     }
-    $self->{scrobbled} = 1;
+    $self->{is_scrobbled} = 1;
 }
 
 sub contains {
@@ -324,6 +325,7 @@ sub update_now_playing {
                            artist => $artist, track => $track);
         $self->make_request($URL_ROOT, 1, $req);
     }
+    $self->{updated} = time;
 }
 
 sub run {
@@ -333,18 +335,20 @@ sub run {
     return unless $self->mpd_is_playing;
     return unless $self->can_connect;
 
-    my $last_updated = $self->{updated};
     $self->update_current_song;
+    return unless $self->{artist} and $self->{track} and $self->{started};
 
-    return if !$last_updated or !$self->{artist} or $self->{scrobbled}
-              or !$self->{track} or ((time - $self->{updated}) < $self->{minplaytime});
+    if ((time - $self->{updated}) > $NOW_PLAYING_INTERVAL) {
+        $self->update_now_playing($self->{artist}, $self->{track});
+    }
 
+    return if (time - $self->{started}) < $self->{minplaytime} or $self->{is_scrobbled};
     $self->scrobble($self->{artist}, $self->{track});
 }
 
 sub main {
     my $self = shift;
-    while ($self->{running}) {
+    while ($self->{is_running}) {
         $self->run();
         sleep $TICK;
     }
