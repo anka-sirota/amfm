@@ -5,6 +5,7 @@ use warnings;
 use POSIX qw/strftime/;
 use Exporter 'import';
 our @EXPORT_OK = qw/debug error warning info/;
+use Carp qw(cluck longmess shortmess);
 
 my %COLORS = (
     black => 30,
@@ -50,7 +51,7 @@ sub log_message {
         push @stack, $msg;
     }
     if ($level =~ /ERROR|DEBUG/) {
-        warn "$time $msg";
+        cluck "$time $msg";
     }
     elsif ($level =~ /INFO|WARN/) {
         say "$time $msg";

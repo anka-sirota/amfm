@@ -12,7 +12,9 @@ use URI::Escape;
 use Net::Ping;
 use WWW::Curl::Easy qw/CURLOPT_HEADER CURLOPT_URL CURLOPT_TIMEOUT CURLOPT_HTTPHEADER CURLOPT_WRITEDATA CURLOPT_POSTFIELDS CURLOPT_POST/;
 use List::MoreUtils qw/all zip/;
-binmode STDOUT, ':utf8';
+use Try::Tiny;
+use Encode;
+use open ':std', ':utf8';
 $| = 1;
 
 my $MPD_HOST = $ENV{MPD_HOST} || "localhost";
@@ -38,7 +40,7 @@ sub new {
         token => undef,
         session_key => undef,
         mpd_socket => undef,
-        updated => undef,
+        updated => 0,
         started => undef,
         is_scrobbled => 0,
         is_running => 1,
@@ -60,7 +62,7 @@ sub compose_signed_url {
     $params{api_key} = $API_KEY;
     $params{format} = 'json';
     my $sign = (join '', map {($_ eq 'format' or $_ eq 'callback' or !$params{$_}) ? '' : $_.$params{$_}} sort keys %params).$SECRET;
-    my $res = join('&', (map {($params{$_}) ? $_."=".uri_escape_utf8($params{$_}) : ''} keys %params), "api_sig=".md5_hex($sign));
+    my $res = join('&', (map {($params{$_}) ? $_."=".uri_escape_utf8($params{$_}) : ''} keys %params), "api_sig=".md5_hex(encode('utf8', $sign)));
     return $res;
 };
 
@@ -87,6 +89,7 @@ sub mpd_command {
     my $socket = $self->{mpd_socket};
     $socket->send("$cmd\r\n");
     my $res = do { local $/ = "OK\n"; <$socket>};
+    $res = decode("utf8", $res);
     return '' if !$res;
     $res =~ s/\nOK\n//g;
     return $res;
@@ -95,7 +98,7 @@ sub mpd_command {
 sub can_connect {
     my $p = Net::Ping->new;
     $p->close();
-    if (!$p->ping("ws.audioscrobbler.com", 1)) {
+    if (!$p->ping("ws.audioscrobbler.com")) {
         error("Last.fm is unreachable");
         return '';
     }
@@ -169,7 +172,7 @@ sub parse_title {
     my ($artist, $track, $album);
     my $old_title = $title;
     #say "Before: $title";
-    given ($title) {
+    for ($title) {
         s/(?:_|\s)+/ /g;
         # removing remixes
         s/\[[^\]]+\]//g;
@@ -330,10 +333,10 @@ sub update_now_playing {
 
 sub run {
     my $self = shift;
-    $self->handshake unless $self->{session_key};
     $self->mpd_connect unless $self->{mpd_socket};
     return unless $self->mpd_is_playing;
     return unless $self->can_connect;
+    $self->handshake unless $self->{session_key};
 
     $self->update_current_song;
     return unless $self->{artist} and $self->{track} and $self->{started};
@@ -348,8 +351,13 @@ sub run {
 
 sub main {
     my $self = shift;
+    my $rv = '';
     while ($self->{is_running}) {
-        $self->run();
+        $rv = try {
+            $self->run();
+        } catch {
+            error($rv);
+        };
         sleep $TICK;
     }
 }
