@@ -6,7 +6,7 @@ use Data::Dumper;
 use Digest::MD5 qw/md5_hex/;
 use IO::Socket::INET;
 use Logger qw/error debug warning info/;
-use JSON qw/from_json/;
+use JSON qw/from_json to_json/;
 use POSIX qw/strftime setsid/;
 use URI::Escape;
 use Net::Ping;
@@ -96,8 +96,7 @@ sub mpd_command {
 }
 
 sub can_connect {
-    my $p = Net::Ping->new;
-    $p->close();
+    my $p = Net::Ping->new("external");
     if (!$p->ping("ws.audioscrobbler.com")) {
         error("Last.fm is unreachable");
         return '';
@@ -132,7 +131,7 @@ sub make_request {
     if ($response) {
         $json = from_json($response);
         if ($json->{error}) {
-            error($json->{info});
+            error(to_json($json));
         }
     }
     return $json;
