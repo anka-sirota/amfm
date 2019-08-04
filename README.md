@@ -3,6 +3,12 @@
 
 Simple Last.fm scrobbler for MPD written in Perl;
 
+### Dependencies
+
+```sh
+yaourt -S perl-try-tiny perl-list-moreutils perl-www-curl perl-any-uri-escape perl-json perl-net-ping-external
+```
+
 ### How it works
 
 This scrobbler is designed to scrobble internet radio.
